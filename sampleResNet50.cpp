@@ -23,6 +23,7 @@
 #include <opencv2/opencv.hpp>
 #include "BatchStream.h"
 #include "LegacyCalibrator.h"
+#include "logger.h"
 
 using namespace nvinfer1;
 using namespace nvcaffeparser1;
