@@ -1,0 +1,11 @@
+Run:
+Packages: opencv, cuda
+
+cd TensorRT/samples
+git clone https://github.com/bojle/TensorRT-sampleResNet50
+cd TensorRT-sampleResNet50
+bash apply_patches.sh
+cd ..
+make CUDA_INSTALL_DIR=<inst_directory> -j $(nproc --all)
+sample_resnet50 -m VGG-16.caffemodel -p deploy.prototxt -d 10_imgs/ -b VGG_mean.binaryproto -s -B 10
+sample_resnet50 -m serialized_engine.trt -p deploy.prototxt -d 10_imgs/ -b VGG_mean.binaryproto
