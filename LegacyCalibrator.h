@@ -17,7 +17,7 @@ public:
 		: mStream(stream), mFirstBatch(firstBatch), mReadCache(readCache)
 	{
 		using namespace nvinfer1;
-		DimsNCHW dims = mStream.getDims();
+        nvinfer1::DimsNCHW dims = mStream.getDims();
 		mInputCount = mStream.getBatchSize() * dims.c() * dims.h() * dims.w();
 		CHECK(cudaMalloc(&mDeviceInput, mInputCount * sizeof(float)));
 		reset(cutoff, quantile);
@@ -28,11 +28,11 @@ public:
 		CHECK(cudaFree(mDeviceInput));
 	}
 
-	int getBatchSize() const override { return mStream.getBatchSize(); }
-	double getQuantile() const override { return mQuantile; }
-	double getRegressionCutoff() const override { return mCutoff; }
+	int getBatchSize() const noexcept override { return mStream.getBatchSize(); }
+	double getQuantile() const noexcept override { return mQuantile; }
+	double getRegressionCutoff() const noexcept override { return mCutoff; }
 
-	bool getBatch(void* bindings[], const char* names[], int nbBindings) override
+	bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept override
 	{
 		if (!mStream.next())
 			return false;
@@ -42,7 +42,7 @@ public:
 		return true;
 	}
 
-	const void* readCalibrationCache(size_t& length) override
+	const void* readCalibrationCache(size_t& length) noexcept override
 	{
 		mCalibrationCache.clear();
 		std::ifstream input(locateFile("CalibrationTable"), std::ios::binary);
@@ -54,19 +54,19 @@ public:
 		return length ? &mCalibrationCache[0] : nullptr;
 	}
 
-	void writeCalibrationCache(const void* cache, size_t length) override
+	void writeCalibrationCache(const void* cache, size_t length) noexcept override
 	{
 		std::ofstream output(locateFile("CalibrationTable"), std::ios::binary);
 		output.write(reinterpret_cast<const char*>(cache), length);
 	}
 
-	const void* readHistogramCache(size_t& length) override
+	const void* readHistogramCache(size_t& length) noexcept override
 	{
 		length = mHistogramCache.size();
 		return length ? &mHistogramCache[0] : nullptr;
 	}
 
-	void writeHistogramCache(const void* cache, size_t length) override
+	void writeHistogramCache(const void* cache, size_t length) noexcept override
 	{
 		mHistogramCache.clear();
 		std::copy_n(reinterpret_cast<const char*>(cache), length, std::back_inserter(mHistogramCache));

@@ -8,6 +8,33 @@
 
 std::string locateFile(const std::string& input);
 
+namespace nvinfer1 {
+    class DimsNCHW {
+        public:
+            DimsNCHW(int n1, int c1, int h1, int w1): nn{n1}, cc{c1}, hh{h1}, ww{w1} {
+            }
+            DimsNCHW(): nn{0}, cc{0}, hh{0}, ww{0} {
+            }
+            int n() {
+                return nn;
+            }
+            int c() {
+                return cc;
+            }
+            int h() {
+                return hh;
+            }
+            int w() {
+                return ww;
+            } 
+        private:
+            int nn;
+            int cc;
+            int hh;
+            int ww;
+    };
+}
+
 class BatchStream
 {
 public:

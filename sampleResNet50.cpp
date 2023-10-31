@@ -26,9 +26,11 @@
 
 using namespace nvinfer1;
 using namespace nvcaffeparser1;
+using namespace sample;
+using namespace std;
 const char* gNetworkName = "resnet-50";
 
-static Logger gLogger;
+static sample::Logger glogger;
 
 // Attributes of MNIST Caffe model
 static const int INPUT_C = 3;
@@ -74,9 +76,9 @@ public:
 		CHECK(cudaFree(mDeviceInput));
 	}
 
-	int getBatchSize() const override { return mStream.getBatchSize(); }
+	int getBatchSize() const noexcept override { return mStream.getBatchSize(); }
 
-	bool getBatch(void* bindings[], const char* names[], int nbBindings) override
+	bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept override
 	{
 		if (!mStream.next())
 			return false;
@@ -87,7 +89,7 @@ public:
 		return true;
 	}
 
-	const void* readCalibrationCache(size_t& length) override
+	const void* readCalibrationCache(size_t& length) noexcept override
 	{
 		mCalibrationCache.clear();
 		std::ifstream input(calibrationTableName(), std::ios::binary);
@@ -99,7 +101,7 @@ public:
 		return length ? &mCalibrationCache[0] : nullptr;
 	}
 
-	void writeCalibrationCache(const void* cache, size_t length) override
+	void writeCalibrationCache(const void* cache, size_t length) noexcept override
 	{
 		std::ofstream output(calibrationTableName(), std::ios::binary);
 		output.write(reinterpret_cast<const char*>(cache), length);
@@ -128,14 +130,16 @@ void caffeToTRTModel(const std::string& deployFile,           // Path of Caffe p
                      IHostMemory*& trtModelStream)            // Output buffer for the TRT model
 {
     // Create builder
-    IBuilder* builder = createInferBuilder(gLogger);
+    IBuilder* builder = createInferBuilder(glogger);
+    IBuilderConfig *builder_config = builder->createBuilderConfig();
 
     // Parse caffe model to populate network, then set the outputs
     const std::string deployFpath = prototxt;
     const std::string modelFpath = model;
     std::cout << "Reading Caffe prototxt: " << deployFpath << "\n";
     std::cout << "Reading Caffe model: " << modelFpath << "\n";
-    INetworkDefinition* network = builder->createNetwork();
+    auto creation_flags = static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+    INetworkDefinition* network = builder->createNetworkV2(creation_flags);
     ICaffeParser* parser = createCaffeParser();
     const IBlobNameToTensor* blobNameToTensor = parser->parse(deployFpath.c_str(),
                                                               modelFpath.c_str(),
@@ -147,18 +151,18 @@ void caffeToTRTModel(const std::string& deployFile,           // Path of Caffe p
         network->markOutput(*blobNameToTensor->find(s.c_str()));
 
     builder->setMaxBatchSize(maxBatchSize);
-    builder->setMaxWorkspaceSize(10 << 20);
+    builder_config->setMaxWorkspaceSize(10 << 20);
 
-    builder->setAverageFindIterations(1);
-    builder->setMinFindIterations(1);
+    //builder_config->setAverageFindIterations(1);
+    //builder_config->setMinFindIterations(1);
 
-    builder->setInt8Mode(dataType == DataType::kINT8);
-    builder->setFp16Mode(dataType == DataType::kHALF);
+    //builder->setInt8Mode(dataType == DataType::kINT8);
+    //builder->setFp16Mode(dataType == DataType::kHALF);
     if (dataType == DataType::kINT8)
-        builder->setInt8Calibrator(calibrator);
+        builder_config->setInt8Calibrator(calibrator);
 
     // Build engine
-    ICudaEngine* engine = builder->buildCudaEngine(*network);
+    ICudaEngine* engine = builder->buildEngineWithConfig(*network, *builder_config);
     assert(engine);
 
     // Destroy parser and network
@@ -384,7 +388,7 @@ int main(int argc, char** argv)
 
 
     // Deserialize engine we serialized earlier
-    IRuntime* runtime = createInferRuntime(gLogger);
+    IRuntime* runtime = createInferRuntime(glogger);
     assert(runtime != nullptr);
     ICudaEngine* engine = runtime->deserializeCudaEngine(trtModelStream->data(), trtModelStream->size(), nullptr);
     assert(engine != nullptr);
