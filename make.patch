@@ -1,0 +1,10 @@
+--- Makefile.old	2023-10-31 12:24:26.363160017 +0530
++++ Makefile	2023-10-31 09:16:52.902390272 +0530
+@@ -51,6 +51,7 @@
+           sampleOnnxMNIST \
+           sampleOnnxMnistCoordConvAC \
+           sampleIOFormats \
++		  TensorRT-sampleResNet50 \
+           trtexec
+ 
+   ifeq ($(SAFETY_SAMPLE_BUILD), 1)
