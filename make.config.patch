@@ -1,0 +1,14 @@
+--- Makefile.config.old	2023-10-31 13:02:27.277924144 +0530
++++ Makefile.config	2023-10-31 10:58:28.455000010 +0530
+@@ -191,9 +191,9 @@
+ endif
+ 
+ #########################
+-INCPATHS = 
++INCPATHS = -I/usr/include/opencv4
+ LIBPATHS = 
+-COMMON_LIBS = 
++COMMON_LIBS = -lopencv_core -lopencv_imgproc -lopencv_imgcodecs
+ 
+ # Add extra libraries if TRT_STATIC is enabled
+ ifeq ($(TRT_STATIC), 1)
