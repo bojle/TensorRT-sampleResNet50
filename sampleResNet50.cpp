@@ -436,7 +436,9 @@ int main(int argc, char** argv)
         std::cout << endl <<  "Total validation images: " << imageNames.size() << ", errors = " << errors 
             << ", error rate = " << (float)errors*100/imageNames.size() << "%" << std::endl;
     } else {
+        auto img_proc_sum = 0;
         for (int i=0; i < batchSize; ++i) {
+            auto t0 = Time::now();
             image = cv::imread(imageNames[i], cv::IMREAD_COLOR);
             if (image.empty()) continue;
             cv::resize(image, image, cv::Size(INPUT_H,INPUT_W));
@@ -447,6 +449,10 @@ int main(int argc, char** argv)
                     data[i*INPUT_C * INPUT_H * INPUT_W + c*volChl + j] = 
                         float(image.data[j*INPUT_C + 2 - c]) - meanData[c*volChl + j]; //pixelMean[c];
             }
+            auto t1 = Time::now();
+            fsec fs = t1 - t0;
+            ms d = std::chrono::duration_cast<ms>(fs);
+            img_proc_sum += d.count();
         }
         printf("Starting inference .............. \n");
         /** Start inference & calc performance **/
@@ -472,8 +478,10 @@ int main(int argc, char** argv)
 
         /** Show performance results **/
         double infertime = total / iter;
-        std::cout << endl <<  "Average running time of one iteration: " << infertime << " ms" << std::endl;
-        std::cout << endl <<  "Average running time of one forward: " << forwardtime/iter << " ms" << std::endl;
+        double runningtime = infertime + (img_proc_sum/batchSize);
+        std::cout << endl <<  "Average inference time of one iteration: " << infertime << " ms" << std::endl;
+        std::cout << endl <<  "Average inference time of one forward: " << forwardtime/iter << " ms" << std::endl;
+        std::cout << endl <<  "Average running time of one image: " << runningtime << " ms" << std::endl;
         std::cout << "batchSize: " << batchSize << ", Throughput " << 1000/infertime*batchSize << " fps" << std::endl;
     }
 
