@@ -49,6 +49,8 @@ char prototxt[256];
 char mean[256];
 char imageDir[256];
 int iter = 1;
+int serialize_engine = 0;
+int batch_option_yes = 0;
 
 char caliDir[256];
 DataType modelDataType = DataType::kFLOAT;
@@ -139,6 +141,7 @@ void caffeToTRTModel(const std::string& deployFile,           // Path of Caffe p
     std::cout << "Reading Caffe prototxt: " << deployFpath << "\n";
     std::cout << "Reading Caffe model: " << modelFpath << "\n";
     auto creation_flags = static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+
     INetworkDefinition* network = builder->createNetworkV2(creation_flags);
     ICaffeParser* parser = createCaffeParser();
     const IBlobNameToTensor* blobNameToTensor = parser->parse(deployFpath.c_str(),
@@ -171,6 +174,12 @@ void caffeToTRTModel(const std::string& deployFile,           // Path of Caffe p
 
     // Serialize engine and destroy it
     trtModelStream = engine->serialize();
+    if (serialize_engine == 1) {
+        std::ofstream outFile("serialized_engine.trt", std::ios::out | std::ios::binary);
+        outFile.write(static_cast<const char*>(trtModelStream->data()), trtModelStream->size());
+        outFile.close();
+    }
+
     engine->destroy();
     builder->destroy();
 
@@ -256,11 +265,43 @@ void readImagesArguments(std::vector<std::string> &images, const std::string& ar
     }
 }
 
+std::string get_file_extension(const std::string& file_name) {
+    size_t dot_pos = file_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos < file_name.size() - 1) {
+        return file_name.substr(dot_pos + 1);
+    }
+    return ""; // No file extension found
+}
+
+ICudaEngine *trt_to_engine(std::string &&model_name, IRuntime *runtime) {
+    assert(get_file_extension(model_name) == std::string("trt"));
+    std::ifstream inFile(model_name, std::ios::in | std::ios::binary);
+    if (!inFile.is_open()) {
+        std::cerr << "Error: Could not open the serialized engine file." << std::endl;
+        abort();
+        return nullptr;
+    }
+
+    inFile.seekg(0, std::ios::end);
+    size_t fileSize = inFile.tellg();
+    inFile.seekg(0, std::ios::beg);
+
+    std::vector<char> engineData(fileSize);
+    inFile.read(engineData.data(), fileSize);
+    inFile.close();
+    ICudaEngine* engine = runtime->deserializeCudaEngine(engineData.data(), fileSize, nullptr);
+    return engine;
+}
+
+
+
 void usage(char *name)
 {
     printf("usage: %s -m model_file -p prototxt_file -b mean.binaryproto \n"
                     "\t -d image-file-or-directory [-n iteration]\n"
                     "\t -c Calibrate-directory [-v (validation)] \n"
+                    "\t -s Serialize Engine to a file (takes no arguments) \n"
+                    "\t -B [n] Batch Size\n"
                     "\t [-e device] [-t FLOAT|HALF|INT8] [-h]\n\n", name);
 }
 
@@ -272,7 +313,7 @@ int main(int argc, char** argv)
     int device = 0;
     bool validation = false; // if "-v" is set, validate dataset
     
-    while ((c = getopt(argc, argv, "m:p:b:d:n:t:e:c:vh")) != -1) {
+    while ((c = getopt(argc, argv, "m:p:b:d:n:t:e:sc:vhB:")) != -1) {
         switch (c) {
             case 'm':
                 strcpy(model, optarg);
@@ -285,6 +326,9 @@ int main(int argc, char** argv)
                 break;
             case 'd':
                 strcpy(imageDir, optarg);
+                break;
+            case 's':
+                serialize_engine = 1;
                 break;
             case 'c':
                 strcpy(caliDir, optarg);
@@ -310,6 +354,10 @@ int main(int argc, char** argv)
             case 'h':
                 usage(argv[0]);
                 return 0;
+            case 'B':
+                batch_option_yes = 1;
+                batchSize = atoi(optarg);
+                break;
         }
     }
 
@@ -356,7 +404,10 @@ int main(int argc, char** argv)
 
     cv::Mat image;
 
-    batchSize = imageNames.size();
+    if (batch_option_yes == 0) {
+        /* if not batchsize was provided on the cli, deduce dynamically */
+        batchSize = imageNames.size();
+    }
     if (batchSize > MAX_BATCHSIZE) {
         cout << "Max batch size is " << MAX_BATCHSIZE << ", will only handle first " << MAX_BATCHSIZE << " images" << endl;
         batchSize = MAX_BATCHSIZE;
@@ -365,18 +416,34 @@ int main(int argc, char** argv)
     if (validation)
         batchSize = 1;
 
+    std::string file_extension = get_file_extension(std::string(model));
+
     // Create TRT model from caffe model and serialize it to a stream
     IHostMemory* trtModelStream{nullptr};
+    IRuntime *runtime = createInferRuntime(glogger);
+    assert(runtime != nullptr);
+    ICudaEngine *engine {nullptr};
+    IExecutionContext* context {nullptr};
     if (modelDataType == DataType::kINT8) {
         BatchStream calibrationStream(CAL_BATCH_SIZE, NB_CAL_BATCHES);
         Int8EntropyCalibrator calibrator(calibrationStream, FIRST_CAL_BATCH);
         caffeToTRTModel(prototxt, model, std::vector<std::string>{OUTPUT_BLOB_NAME}, batchSize, 
             modelDataType, &calibrator, trtModelStream);
-    } else {
+    } else if (file_extension == std::string("trt")) {
+        printf("Loading an engine directly!");
+        engine = trt_to_engine(std::string(model), runtime); 
+    }
+    else {
         caffeToTRTModel(prototxt, model, std::vector<std::string>{OUTPUT_BLOB_NAME}, batchSize, 
             modelDataType, nullptr, trtModelStream);
+        assert(trtModelStream != nullptr);
+        // Deserialize engine we serialized earlier
+        engine = runtime->deserializeCudaEngine(trtModelStream->data(), trtModelStream->size(), nullptr);
+        assert(engine != nullptr);
+        trtModelStream->destroy();
     }
-    assert(trtModelStream != nullptr);
+    context = engine->createExecutionContext();
+    assert(context != nullptr);
 
     // Parse mean file
     ICaffeParser* parser = createCaffeParser();
@@ -387,14 +454,6 @@ int main(int argc, char** argv)
     parser->destroy();
 
 
-    // Deserialize engine we serialized earlier
-    IRuntime* runtime = createInferRuntime(glogger);
-    assert(runtime != nullptr);
-    ICudaEngine* engine = runtime->deserializeCudaEngine(trtModelStream->data(), trtModelStream->size(), nullptr);
-    assert(engine != nullptr);
-    trtModelStream->destroy();
-    IExecutionContext* context = engine->createExecutionContext();
-    assert(context != nullptr);
 
     // Run inference on input data
     float prob[MAX_BATCHSIZE*OUTPUT_SIZE];
@@ -436,53 +495,58 @@ int main(int argc, char** argv)
         std::cout << endl <<  "Total validation images: " << imageNames.size() << ", errors = " << errors 
             << ", error rate = " << (float)errors*100/imageNames.size() << "%" << std::endl;
     } else {
-        auto img_proc_sum = 0;
-        for (int i=0; i < batchSize; ++i) {
-            auto t0 = Time::now();
-            image = cv::imread(imageNames[i], cv::IMREAD_COLOR);
-            if (image.empty()) continue;
-            cv::resize(image, image, cv::Size(INPUT_H,INPUT_W));
+        for (int i = 0; i < 1000; ++i) {
+            auto img_proc_sum = 0;
+            for (int i=0; i < batchSize; ++i) {
+                auto t0 = Time::now();
+                image = cv::imread(imageNames[i], cv::IMREAD_COLOR);
+                if (image.empty()) continue;
+                cv::resize(image, image, cv::Size(INPUT_H,INPUT_W));
 
-            for (int c = 0; c < INPUT_C; ++c) {
-                // the color image to input should be in BGR order
-                for (unsigned j = 0, volChl = INPUT_H*INPUT_W; j < volChl; ++j)
-                    data[i*INPUT_C * INPUT_H * INPUT_W + c*volChl + j] = 
-                        float(image.data[j*INPUT_C + 2 - c]) - meanData[c*volChl + j]; //pixelMean[c];
+                for (int c = 0; c < INPUT_C; ++c) {
+                    // the color image to input should be in BGR order
+                    for (unsigned j = 0, volChl = INPUT_H*INPUT_W; j < volChl; ++j)
+                        data[i*INPUT_C * INPUT_H * INPUT_W + c*volChl + j] = 
+                            float(image.data[j*INPUT_C + 2 - c]) - meanData[c*volChl + j]; //pixelMean[c];
+                }
+                auto t1 = Time::now();
+                fsec fs = t1 - t0;
+                ms d = std::chrono::duration_cast<ms>(fs);
+                img_proc_sum += d.count();
             }
-            auto t1 = Time::now();
-            fsec fs = t1 - t0;
-            ms d = std::chrono::duration_cast<ms>(fs);
-            img_proc_sum += d.count();
-        }
-        printf("Starting inference .............. \n");
-        /** Start inference & calc performance **/
-        for (int i = 0; i < iter; ++i) {
-            auto t0 = Time::now();
-            doInference(device, *context, data, prob, batchSize);
-            auto t1 = Time::now();
-            fsec fs = t1 - t0;
-            ms d = std::chrono::duration_cast<ms>(fs);
-            total += d.count();
-        }
-        // Print histogram of the output distribution
-        std::cout << "\nOutput:\n\n";
-        for (int n=0; n < batchSize; ++n) {
-            cout << "File: " << imageNames[n] << endl;
-            for (unsigned int i = 0; i < OUTPUT_SIZE; i++)
-            {
-                std::cout << i << ": " << std::string(int(std::floor(prob[n*OUTPUT_SIZE+i] * 10 + 0.5f)), '*') 
-                    << " " << prob[n*OUTPUT_SIZE+i]<< "\n";
+            printf("Starting inference .............. \n");
+            /** Start inference & calc performance **/
+            for (int i = 0; i < iter; ++i) {
+                auto t0 = Time::now();
+                doInference(device, *context, data, prob, batchSize);
+                auto t1 = Time::now();
+                fsec fs = t1 - t0;
+                ms d = std::chrono::duration_cast<ms>(fs);
+                total += d.count();
             }
-            std::cout << std::endl;
-        }
+            // Print histogram of the output distribution
+            std::cout << "\nOutput:\n\n";
+            for (int n=0; n < batchSize; ++n) {
+                cout << "File: " << imageNames[n] << endl;
+                for (unsigned int i = 0; i < OUTPUT_SIZE; i++)
+                {
+                    std::cout << i << ": " << std::string(int(std::floor(prob[n*OUTPUT_SIZE+i] * 10 + 0.5f)), '*') 
+                        << " " << prob[n*OUTPUT_SIZE+i]<< "\n";
+                }
+                std::cout << std::endl;
+            }
 
-        /** Show performance results **/
-        double infertime = total / iter;
-        double runningtime = infertime + (img_proc_sum/batchSize);
-        std::cout << endl <<  "Average inference time of one iteration: " << infertime << " ms" << std::endl;
-        std::cout << endl <<  "Average inference time of one forward: " << forwardtime/iter << " ms" << std::endl;
-        std::cout << endl <<  "Average running time of one image: " << runningtime << " ms" << std::endl;
-        std::cout << "batchSize: " << batchSize << ", Throughput " << 1000/infertime*batchSize << " fps" << std::endl;
+            /** Show performance results **/
+            double infertime = total / iter;
+            double runningtime = infertime + (img_proc_sum/batchSize);
+            std::cout << endl <<  "Average inference time of one iteration: " << infertime/batchSize << " ms" << std::endl;
+            //std::cout << endl <<  "Average inference time of one forward: " << forwardtime/iter << " ms" << std::endl;
+            std::cout << endl <<  "Average running time of one image: " << runningtime/batchSize << " ms" << std::endl;
+            std::cout << "batchSize: " << batchSize << ", Throughput " << 1000/infertime*batchSize << " fps" << std::endl;
+
+            img_proc_sum = 0;
+            total = 0;
+        }
     }
 
     meanBlob->destroy();
